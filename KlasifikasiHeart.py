@@ -1,218 +1,325 @@
-# ===============================
+# ================================
 # IMPORT LIBRARY
-# ===============================
-import streamlit as st  # Streamlit untuk membangun web app interaktif
-import pandas as pd     # Pandas untuk manipulasi data
-import numpy as np      # Numpy untuk operasi numerik
-import joblib           # Joblib untuk memuat model Machine Learning
-import plotly.express as px  # Plotly Express untuk visualisasi grafik
-import plotly.graph_objects as go  # Plotly GO untuk grafik tingkat lanjut (gauge chart)
-from datetime import datetime  # Untuk menangani waktu dan tanggal
-import json             # Untuk ekspor hasil prediksi ke format JSON
+# ================================ 
+# pandas, numpy: manipulasi data.
+# matplotlib.pyplot, 
+# seaborn: visualisasi data. joblib: menyimpan/memuat model.
+# sklearn.*: machine learning, evaluasi model, dan tuning.
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import joblib
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, precision_score, recall_score, classification_report, confusion_matrix
 
-# ===============================
-# PAGE SETUP
-# =============================== 
-# Konfigurasi tampilan halaman aplikasi Streamlit
-st.set_page_config(
-    page_title="Prediksi Penyakit Jantung",  # Judul tab browser
-    page_icon="💓",                         # Ikon tab
-    layout="wide",                          # Layout halaman lebar
-    initial_sidebar_state="collapsed"       # Sidebar tidak ditampilkan awalnya
-)
+# ================================
+# SETUP
+# ================================ 
+# Menampilkan semua kolom saat df.head(). 
+# Menetapkan seed agar hasil random bisa direproduksi.
+pd.set_option('display.max_columns', None)
+np.random.seed(42)
 
-# Judul utama dan deskripsi aplikasi
-st.title("💓 Prediksi Penyakit Jantung")
-st.markdown("Aplikasi prediksi risiko penyakit jantung berdasarkan data " \
-"medis pasien menggunakan model **Random Forest**.")
+# ================================
+# 1. LOAD DATA DAN EDA
+# ================================ 
 
-# ===============================
-# LOAD MODEL
-# ===============================
-# Fungsi untuk memuat model dari file joblib
-@st.cache_resource
-def load_model():
-    return joblib.load("heart_disease_model.joblib")  # Memuat file model yang berisi model dan metadata
+print("1. Loading and EDA...")
+# Daftar nama kolom sesuai dokumentasi dataset UCI
+column_names = [
+    'age', 'sex', 'cp', 'trestbps', 'chol',
+    'fbs', 'restecg', 'thalach', 'exang',
+    'oldpeak', 'slope', 'ca', 'thal', 'num'
+]
+# Membaca file .data dan mengubah "?" menjadi NaN
+df = pd.read_csv("processed.cleveland.data", names=column_names, na_values="?")
 
-# Memanggil fungsi untuk memuat model
-model_bundle = load_model()
-model = model_bundle["model"]              # Model Machine Learning
-features = model_bundle["feature_names"]   # Fitur yang digunakan dalam model
-target_map = model_bundle["target_map"]    # Pemetaan hasil prediksi ke label kelas
+# 👉 Tampilkan 5 baris awal data
+# informasi tipe data (info()),
+# jumlah missing values,
+# dan data duplikat.
 
-# ===============================
-# INPUT MAPPING
-# ===============================
-# Mapping nilai dari input form (teks) ke angka yang dipahami model
-sex_map = {"Laki-laki": 1, "Perempuan": 0}
-cp_map = {"Nyeri saat aktivitas berat": 1, "Nyeri tidak khas": 2, "Nyeri bukan karena jantung": 3, "Tidak ada gejala": 4}
-fbs_map = {"Ya (>120 mg/dl)": 1, "Tidak (<=120 mg/dl)": 0}
-restecg_map = {"Normal": 0, "ST-T Abnormalitas": 1, "Hypertrophy(pembesaran jantung)": 2}
-exang_map = {"Ya": 1, "Tidak": 0}
-slope_map = {"Upsloping(meningkat, normal)": 1, "Flat(datar, bisa berisiko)": 2, "Downsloping(menurun, berisiko tinggi)": 3}
-thal_map = {"Normal": 3, "Fixed Defect(kerusakan permanen)": 6, "Reversible Defect(kerusakan yang bisa pulih)": 7}
+print("\n  Data Awal (5 baris):")
+print(df.head())
 
-# ===============================
-# FORM INPUT
-# ===============================
-# Bagian tampilan form input data pasien
-col_form, col_result = st.columns([2, 1])  # Layout dua kolom
+print(f"Shape: {df.shape}")
+print(df.info())
 
-with col_form:
-    st.subheader("📝 Input Data Pasien")
-    with st.form("heart_form"):
-        col1, col2 = st.columns(2)
-        with col1:
-            # Input kolom kiri
-            age = st.number_input("Umur(age)", min_value=20, max_value=80, value=st.session_state.get("age", 50), key="age")
-            sex = st.selectbox("Jenis Kelamin(sex)", list(sex_map.keys()), key="sex")
-            cp = st.selectbox("Tipe Nyeri Dada(cp)", list(cp_map.keys()), key="cp")
-            trestbps = st.number_input("Tekanan Darah Saat Istirahat (mm Hg)(trestbps)", min_value=80, max_value=200, value=st.session_state.get("trestbps", 120), key="trestbps")
-            chol = st.number_input("Kolesterol (mg/dl)(chol)", min_value=100, max_value=600, value=st.session_state.get("chol", 240), key="chol")
-            fbs = st.selectbox("Gula Darah Puasa > 120 mg/dl?(fbs)", list(fbs_map.keys()), key="fbs")
-            restecg = st.selectbox("Hasil Elektrokardiografi Saat Istirahat(restecg)", list(restecg_map.keys()), key="restecg")
-        with col2:
-            # Input kolom kanan
-            thalach = st.number_input("Detak Jantung Maksimum(thalach)", min_value=60, max_value=220, value=st.session_state.get("thalach", 150), key="thalach")
-            exang = st.selectbox("Angina(Nyeridada) akibat Olahraga?(exang)", list(exang_map.keys()), key="exang")
-            oldpeak = st.number_input("Oldpeak (Depresi ST)(oldpeak)", min_value=0.0, max_value=6.0, value=st.session_state.get("oldpeak", 1.0), key="oldpeak")
-            slope = st.selectbox("Kemiringan ST(slope)", list(slope_map.keys()), key="slope")
-            ca = st.number_input("Jumlah Pembuluh Darah Utama (0-3)(ca)", min_value=0, max_value=3, value=st.session_state.get("ca", 0), key="ca")
-            thal = st.selectbox("Tipe Thalassemia(thal)", list(thal_map.keys()), key="thal")
+print("\nMissing Values:")
+print(df.isnull().sum())
 
-        # Tombol submit, reset, dan export
-        col_submit, col_reset, col_export = st.columns([1, 1, 1])
-        submit_btn = col_submit.form_submit_button("🔍 Prediksi")
-        reset_btn = col_reset.form_submit_button("🔄 Reset")
-        export_btn = col_export.form_submit_button("📤 Export")
+total_missing = df.isnull().sum().sum()
+duplicate_count = df.duplicated().sum()
+print(f"\n Total Missing Values: {total_missing}")
+print(f" Duplikat Sebelum Dihapus: {duplicate_count}")
 
-# ===============================
-# RESET SESSION
-# ===============================
-# Jika tombol reset ditekan, maka semua nilai input dikosongkan
-if reset_btn:
-    for key in ["age", "sex", "cp", "trestbps", "chol", "fbs", "restecg", "thalach", "exang", "oldpeak", "slope", "ca", "thal",
-                 "export_data", "last_probas", "last_prediction"]:
-        if key in st.session_state:
-            del st.session_state[key]
-    st.experimental_rerun()  # Reload halaman
+# ================================
+# 2. VISUALISASI
+# ================================
+print("\n2. Visualisasi...")
 
-# ===============================
-# PREDIKSI
-# ===============================
-# Jika tombol submit ditekan, proses prediksi dilakukan
-if submit_btn:
-    # Ambil input pengguna dan ubah ke bentuk numerik sesuai model
-    user_input = {
-        "age": st.session_state.age,
-        "sex": sex_map[st.session_state.sex],
-        "cp": cp_map[st.session_state.cp],
-        "trestbps": st.session_state.trestbps,
-        "chol": st.session_state.chol,
-        "fbs": fbs_map[st.session_state.fbs],
-        "restecg": restecg_map[st.session_state.restecg],
-        "thalach": st.session_state.thalach,
-        "exang": exang_map[st.session_state.exang],
-        "oldpeak": st.session_state.oldpeak,
-        "slope": slope_map[st.session_state.slope],
-        "ca": st.session_state.ca,
-        "thal": thal_map[st.session_state.thal]
-    }
+#Histogram Semua Fitur Numerik
+df.hist(figsize=(15, 10))
+plt.tight_layout()
+plt.savefig("numeric_histograms.png")
+plt.close()
 
-    df_input = pd.DataFrame([user_input])[features]  # Buat DataFrame input
-    prediction = model.predict(df_input)[0]          # Prediksi kelas
-    probas = model.predict_proba(df_input)[0]        # Probabilitas dari masing-masing kelas
-    label = target_map[prediction]                   # Ubah label hasil ke bentuk teks
+plt.figure(figsize=(12, 10))
+sns.heatmap(df.corr(), annot=True, cmap="coolwarm")
+plt.title("Correlation Matrix")
+plt.savefig("correlation_matrix.png")
+plt.close()
 
-    # Simpan hasil prediksi ke session
-    st.session_state["export_data"] = {
-        "timestamp": datetime.now().isoformat(),
-        "input": user_input,
-        "prediction": label,
-        "confidence": float(probas[prediction])
-    }
-    st.session_state["last_probas"] = probas
-    st.session_state["last_prediction"] = prediction
+# ================================
+# 3. DATA CLEANING
+# ================================
+print("\n3. Data Cleaning...")
 
-# ===============================
-# HASIL PREDIKSI
-# ===============================
-# Menampilkan hasil prediksi jika sudah tersedia
-if "last_prediction" in st.session_state and "last_probas" in st.session_state:
-    with col_result:
-        st.subheader("🎯 Hasil Prediksi")
-        pred_label = target_map[st.session_state["last_prediction"]]  # Label hasil
-        confidence = st.session_state["last_probas"][st.session_state["last_prediction"]] * 100  # Persentase keyakinan
-        st.success(f"Hasil: **{pred_label}** (Keyakinan: {confidence:.2f}%)")
+print("\n Missing value sebelum diperbaiki:")
+print(df.isnull().sum())
 
-        # Visualisasi Gauge Chart
-        fig_gauge = go.Figure(go.Indicator(
-            mode="gauge+number",
-            value=confidence,
-            title={'text': "Keyakinan (%)"},
-            gauge={
-                'axis': {'range': [0, 100]},
-                'bar': {'color': 'green' if st.session_state["last_prediction"] == 1 else 'orange'}
-            }
-        ))
-        fig_gauge.update_layout(height=250, margin=dict(t=35, b=25))
-        st.plotly_chart(fig_gauge, use_container_width=True)
-
-        # Visualisasi Bar Chart Probabilitas Kelas
-        prob_df = pd.DataFrame({
-            "Kelas": list(target_map.values()),
-            "Probabilitas": st.session_state["last_probas"]
-        })
-        fig_bar = px.bar(prob_df, x="Kelas", y="Probabilitas", color="Probabilitas",
-                         color_continuous_scale=["orange", "green"], title="Distribusi Probabilitas")
-        fig_bar.update_layout(height=250, margin=dict(t=25, b=30))
-        st.plotly_chart(fig_bar, use_container_width=True)
-
-# ===============================
-# EXPORT
-# ===============================
-# Jika tombol export ditekan, hasil prediksi dapat diunduh dalam file JSON
-if export_btn:
-    if "export_data" in st.session_state:
-        st.download_button(
-            label="📥 Download Hasil Prediksi",
-            data=json.dumps(st.session_state["export_data"], indent=2),
-            file_name=f"heart_prediction_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-            mime="application/json"
-        )
+for col in df.columns:
+    if df[col].dtype == "object":
+        df[col] = df[col].fillna(df[col].mode()[0])  # Imputasi mode untuk kolom object
     else:
-        st.warning("⚠️ Belum ada hasil prediksi untuk diekspor.")
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+        df[col] = df[col].fillna(df[col].median())  # Imputasi median untuk numerik
 
-# ===============================
-# FITUR PENTING
-# ===============================
-# Deskripsi singkat fitur-fitur penting bagi model prediksi penyakit jantung
-# cp, ca, thal, thalach, exang, oldpeak, age, slope, trestbps, chol, sex, restecg, fbs
+# Tampilkan kembali missing value setelah diperbaiki
+print("\n Missing value setelah diperbaiki:")
+print(df.isnull().sum())
 
-# ===============================
-# VISUALISASI FEATURE IMPORTANCE
-# ===============================
-# Menampilkan pentingnya fitur-fitur dalam model menggunakan grafik horizontal
-st.subheader("📊 Pentingnya Fitur dalam Model")
+# Taampilkan data duplikat 
+print(f"\n📑 Duplikat ditemukan: {df.duplicated().sum()}")
+if df.duplicated().sum() > 0:
+    print("👉 Contoh data duplikat:")
+    print(df[df.duplicated()].head())
+# Hapus duplikat dan tampilkan jumlah yang dihapus
+before_drop_duplicates = df.shape[0]
+df.drop_duplicates(inplace=True)
+after_drop_duplicates = df.shape[0]
+removed_duplicates = before_drop_duplicates - after_drop_duplicates
+
+print(f"\n Jumlah Data Duplikat yang Dihapus: {removed_duplicates}")
+print(f"Data shape after cleaning: {df.shape}")
+print("\n  Data Setelah Cleaning (5 baris):")
+print(df.head())
+
+# ================================
+# 4. CORRELATION AFTER CLEANING
+# ================================
+print("\n4. Correlation after cleaning...")
+# Visualisasi korelasi ulang setelah data dibersihkan
+plt.figure(figsize=(15, 15))
+sns.heatmap(df.corr(), annot=True, square=True, cmap="RdYlGn_r")
+plt.title("Correlation After Cleaning")
+plt.savefig("correlation_after_encoding.png")
+plt.close()
+
+
+# ================================
+# 5. ENCODING & TARGET LABEL
+# ================================
+print("\n. Encoding target...")
+# Ubah kolom 'num' jadi biner: 0 = tidak sakit, 1 = sakit
+df["num"] = df["num"].apply(lambda x: 1 if x > 0 else 0)
+# Mapping hasil prediksi ke label
+income_map = {0: "Tidak Sakit", 1: "Sakit"}
+encoding_maps = {"num": income_map}
+
+# Tampilkan 5 baris setelah encoding
+print("\n  Data Setelah Encoding (5 baris):")
+print(df.head())
+
+# ================================
+# 6. FEATURE SELECTION
+# ================================
+
+print("\n6. Feature Selection...")
+
+# Fungsi untuk memilih fitur yang korelasinya > threshold
+def correlation(dataset, threshold):
+    col_corr = set()
+    corr_matrix = dataset.corr()
+    for i in range(len(corr_matrix.columns)):
+        for j in range(i):
+            if abs(corr_matrix.iloc[i, j]) > threshold:
+                col_corr.add(corr_matrix.columns[i])
+    return col_corr
+
+# Pisahkan X (fitur) dan y (target)
+X = df.drop("num", axis=1)
+y = df["num"]
+
+# Identifikasi fitur yang terlalu berkorelasi
+corr_features = correlation(X, 0.8)
+X.drop(columns=corr_features, inplace=True)
+
+# Tampilkan nama fitur yang dipertahankan
+print("\n  Fitur Setelah Seleksi Korelasi:")
+print(X.columns.tolist())
+
+# Tampilkan data fitur
+print("\n  Data Fitur (5 baris):")
+print(X.head())
+
+
+# ================================
+# 7. MODEL TRAINING
+# ================================
+
+print("\n7. Model Training...")
+
+# Split data dengan proporsi 90:10 dan stratifikasi target
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, stratify=y, random_state=42)
+
+# ================================
+# BASELINE: RANDOM FOREST DEFAULT
+# ================================
+
+print("\n📌 Random Forest Default")
+
+rf_default = RandomForestClassifier(random_state=42)
+rf_default.fit(X_train, y_train)
+
+y_test_pred_default = rf_default.predict(X_test)
+
+acc_default = accuracy_score(y_test, y_test_pred_default)
+prec_default = precision_score(y_test, y_test_pred_default)
+rec_default = recall_score(y_test, y_test_pred_default)
+
+print("\nHasil Evaluasi Random Forest Default:")
+print(f"Akurasi  : {acc_default:.4f}")
+print(f"Precision: {prec_default:.4f}")
+print(f"Recall   : {rec_default:.4f}")
+
+# Grid pencarian parameter terbaik untuk RandomForest
+param_grid = {
+    'n_estimators': [50, 100, 200],
+    'max_depth': [5, 10, 20],
+    'min_samples_split': [2, 5],
+    'min_samples_leaf': [1, 2],
+    'criterion': ['gini', 'entropy']
+}
+
+# Proses tuning model dengan GridSearchCV
+grid = GridSearchCV(RandomForestClassifier(random_state=42),
+                    param_grid, scoring="accuracy", cv=3, n_jobs=-1, verbose=1)
+
+try:
+    grid.fit(X_train, y_train)
+    best_model = grid.best_estimator_
+    print(f"Best Parameters: {grid.best_params_}")
+except Exception as e:
+    print("❌ GridSearchCV gagal:", str(e))
+    exit()
+
+# ================================
+# 8. FEATURE IMPORTANCE
+# ================================
+
+# Visualisasi seberapa penting masing-masing fitur dalam model
+plt.figure(figsize=(10, 6))
 feature_importance = pd.DataFrame({
-    "Fitur": features,
-    "Pentingnya": model.feature_importances_
-}).sort_values("Pentingnya", ascending=True)
+    "Feature": X.columns,
+    "Importance": best_model.feature_importances_
+}).sort_values("Importance", ascending=False)
 
-fig_feat = px.bar(feature_importance, x="Pentingnya", y="Fitur", orientation="h",
-                  color="Pentingnya", color_continuous_scale="viridis",
-                  title="Pengaruh Fitur terhadap Prediksi")
-fig_feat.update_layout(height=420, margin=dict(t=20, b=40))
-st.plotly_chart(fig_feat, use_container_width=True)
+# Barplot fitur penting
+sns.barplot(x="Importance", y="Feature", data=feature_importance)
+plt.title("Feature Importance")
+plt.tight_layout()
+plt.savefig("feature_importance.png")
+plt.close()
+print("8. ✅ Feature Importance disimpan sebagai 'feature_importance.png'")
 
-# ===============================
-# FOOTER
-# ===============================
-# Informasi pembuat dan afiliasi
-st.markdown("""
----
-<div style='text-align: center; font-size: 14px; color: gray;'>
-    Dibuat menggunakan model <strong>Random Forest</strong> oleh Gabriel Marvel Juan Purwanto<br>
-    <em>Fakultas Ilmu Komputer, Universitas Dian Nuswantoro</em> – Streamlit App © 2025
-</div>
-""", unsafe_allow_html=True)
+
+# ================================
+# 9. PREDICTION TEST
+# ================================
+
+# Fungsi prediksi menggunakan model yang disimpan
+def predict_heart_disease(data, model_components):
+    if isinstance(data, dict):
+        data = pd.DataFrame([data])
+    model = model_components['model']
+    features = model_components['feature_names']
+    data_for_pred = data[features]
+    pred = model.predict(data_for_pred)[0]
+    prob = model.predict_proba(data_for_pred)[0]
+    return {
+        'prediction': pred,
+        'prediction_label': model_components['target_map'][pred],
+        'probability': prob[pred]
+    }
+
+# Uji prediksi pada satu sampel
+test_sample = X_test.iloc[0].to_dict()
+loaded = joblib.load("heart_disease_model.joblib")
+print("\n Prediction test result:")
+print(predict_heart_disease(test_sample, loaded))
+print("Actual:", y_test.iloc[0])
+
+# ================================
+# 10. PROBABILITAS
+# ================================
+
+# Tampilkan contoh probabilitas prediksi
+probas = best_model.predict_proba(X_test)
+print("\n Contoh 5 Probabilitas Prediksi:")
+print(probas[:5])
+
+
+# ================================
+# 11. Evaluasi Model
+# ================================
+
+# --- Evaluasi Data TRAINING ---
+y_train_pred = best_model.predict(X_train)
+
+print("\n Evaluasi Data Training:")
+print(f"Akurasi  : {accuracy_score(y_train, y_train_pred):.4f}")
+print(f"Precision: {precision_score(y_train, y_train_pred):.4f}")
+print(f"Recall   : {recall_score(y_train, y_train_pred):.4f}")
+
+# --- Evaluasi Data TEST ---
+y_test_pred = best_model.predict(X_test)
+
+print("\n Evaluasi Data Test:")
+print(f"Akurasi  : {accuracy_score(y_test, y_test_pred):.4f}")
+print(f"Precision: {precision_score(y_test, y_test_pred):.4f}")
+print(f"Recall   : {recall_score(y_test, y_test_pred):.4f}")
+
+# Confusion Matrix 
+cm_test = confusion_matrix(y_test, y_test_pred)
+print("\nConfusion Matrix")
+print(cm_test)
+# Visualisasi Confusion Matrix Test
+plt.figure(figsize=(6, 4))
+sns.heatmap(cm_test, annot=True, fmt='d', cmap='Blues', xticklabels=['Tidak Sakit', 'Sakit'], yticklabels=['Tidak Sakit', 'Sakit'])
+plt.title("Confusion Matrix")
+plt.xlabel("Predicted")
+plt.ylabel("Actual")
+plt.savefig("confusion_matrix.png")
+plt.close()
+print(" Confusion Matrix Test disimpan sebagai 'confusion_matrix.png'")
+
+# ================================
+# SAVE MODEL
+# ================================
+
+print("\n9. Saving model...")
+
+# Simpan seluruh komponen model ke file joblib
+model_components = {
+    "model": best_model,
+    "feature_names": X.columns.tolist(),
+    "encoding_maps": encoding_maps,
+    "model_params": grid.best_params_,
+    "removed_features": list(corr_features),
+    "target_map": income_map
+}
+joblib.dump(model_components, "heart_disease_model.joblib")
+print("Model saved as 'heart_disease_model.joblib'")
